@@ -49,12 +49,38 @@ python3 soft_jaw_gen_v2.py \
 - PyQt5
 - Blender (for preview rendering)
 
-## Install
+## Install — Linux / macOS
 
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-pip install cadquery PyQt5
+pip install -r requirements.txt
+```
+
+## Install — Windows
+
+CadQuery's OCP backend doesn't install cleanly via pip on Windows.
+Use conda (Miniforge recommended):
+
+```powershell
+# 1. Install Miniforge: https://github.com/conda-forge/miniforge/releases/latest
+#    Download Miniforge3-Windows-x86_64.exe and run it
+
+# 2. Open Miniforge Prompt, then:
+conda install -c conda-forge cadquery
+pip install PyQt5
+
+# 3. Run the GUI
+python soft_jaw_gui.py
+```
+
+Or if you prefer a one-liner to clone and set up:
+```powershell
+git clone https://github.com/SocietyCharter/soft-jaw-generator.git
+cd soft-jaw-generator
+conda install -c conda-forge cadquery
+pip install PyQt5
+python soft_jaw_gui.py
 ```
 
 ## Output
