@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+output_v*/
+*.png
+*.stl
+blender_script_temp.py
