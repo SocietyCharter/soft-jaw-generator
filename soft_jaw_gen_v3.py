@@ -177,8 +177,8 @@ def make_grip_body(part_for_cut: cq.Workplane, grip_depth: float) -> cq.Workplan
     part_d = max((bb.ymax - bb.ymin) + 400.0, 5.0)
     eps = max(0.02, grip_depth * 0.002)
 
-    z_top = bb.zmax + eps
-    z_bottom = bb.zmax - grip_depth - eps
+    z_bottom = bb.zmin - eps
+    z_top = bb.zmin + grip_depth + eps
     z_mid = (z_top + z_bottom) / 2.0
     z_len = max(z_top - z_bottom, eps * 2.0)
 
@@ -326,7 +326,7 @@ def build_jaws(
 
     jaw_left_stock, jaw_right_stock = make_jaw_stock(stock_x, stock_y, mount_height)
 
-    part_for_cut = part.translate((0, 0, mount_height - pdz))
+    part_for_cut = part.translate((0, 0, mount_height))
 
     grip_body = make_grip_body(part_for_cut, grip_depth)
     grip_body = apply_clearance_and_draft(grip_body, clearance=clearance, draft_angle_deg=draft_angle)
@@ -346,7 +346,7 @@ def build_jaws(
     jaw_left = add_bolt_holes(jaw_left, stock_x, stock_y)
     jaw_right = add_bolt_holes(jaw_right, stock_x, stock_y)
 
-    part_positioned = part.translate((0, 0, mount_height))
+    part_positioned = part_for_cut
     grip_cutter = left_cutter.union(right_cutter)
 
     return JawBuildResult(
