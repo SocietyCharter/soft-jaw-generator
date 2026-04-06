@@ -2,52 +2,100 @@
 
 Generates matched soft jaw pairs for milling vises from any STEP file.
 
-## Features
+This is a jaw-aware vise rework — the generator splits grip geometry by jaw ownership instead of subtracting the same cutter into both halves, eliminating the fan/unwrapped debug shapes produced by the earlier approach.
 
-- CadQuery geometry engine
-- Left/right jaw split for vise mounting
-- Drafted pocket walls (anti-lock taper)
-- Knife relief chamfer at split line
-- M6 bolt holes for vise bed mounting
-- Blender Cycles preview render
-- PyQt5 GUI with live controls
+---
+
+## What's New in v3
+
+- Grip geometry is now split by **jaw ownership** (left/right) rather than shared subtraction
+- Part is clipped to a **top grip slab only** — no full-part subtraction artifacts
+- Each jaw's owned region is swept outward along jaw motion to reduce lock risk
+- New parameters: `seam_clearance`, `sweep_steps`
+- OpenGL viewer with color-coded debug visualization:
+  - **Gray** — jaw blocks
+  - **Red** — part
+  - **Blue / Green** — left / right cutters
+  - **Orange / Yellow** — left / right owned grip regions
+
+---
+
+## Output Files
+
+| File | Description |
+|---|---|
+| `jaw_left.step` | Left jaw half |
+| `jaw_right.step` | Right jaw half |
+| `grip_body_debug.step` | Combined grip body (debug) |
+| `left_owned_debug.step` | Left jaw owned grip region |
+| `right_owned_debug.step` | Right jaw owned grip region |
+| `left_cutter_debug.step` | Left cutter body |
+| `right_cutter_debug.step` | Right cutter body |
+
+---
 
 ## GUI Controls
 
 | Control | Description |
 |---|---|
-| Rotate X/Y/Z | Part orientation — sets the angle the pocket is cut at |
+| Rotate X / Y / Z | Part orientation — sets the angle the pocket is cut at |
 | Grip Depth % | How deep the jaws hold the part (40% default) |
 | Mount Height | Jaw stock height below part datum |
 | Stock Margin | Overhang beyond part footprint per side |
 | Clearance | Gap between pocket wall and part surface |
 | Draft Angle | Pocket wall taper — prevents part from locking |
-| Relief Angle | Knife chamfer at split line |
+| Seam Clearance | Gap at the jaw split line |
+| Sweep Steps | Resolution of anti-lock sweep envelope |
+
+### Good Starting Values
+
+| Parameter | Range |
+|---|---|
+| Clearance | `0.10` – `0.25` |
+| Draft Angle | `0.5` – `1.5°` |
+| Seam Clearance | `0.00` – `0.20` |
+| Sweep Steps | `10` – `16` |
+
+---
 
 ## Usage
 
 ### GUI
+
 ```bash
 source venv/bin/activate
-python3 soft_jaw_gui.py
+python3 soft_jaw_gui_opengl.py
 ```
 
 ### CLI
+
 ```bash
-python3 soft_jaw_gen_v2.py \
+python3 soft_jaw_gen_v3.py \
   --input part.step \
   --output-dir ./output \
   --grip-depth 16 \
-  --relief-angle 3.0 \
+  --clearance 0.15 \
+  --draft-angle 1.0 \
+  --seam-clearance 0.10 \
+  --sweep-steps 12 \
   --orient 0,0,0
 ```
+
+> **Tip:** If the part orientation looks wrong, rotate it until the clamp zone sits near the top of the gray jaw blocks. The program only cuts the top grip slab.
+
+---
 
 ## Requirements
 
 - Python 3.10+
-- CadQuery 2.x
+- CadQuery 2.4+
 - PyQt5
-- Blender (for preview rendering)
+- pyqtgraph (OpenGL viewer)
+- PyOpenGL
+- numpy
+- numpy-stl
+
+---
 
 ## Install — Linux / macOS
 
@@ -57,10 +105,15 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+Or use the included script:
+
+```bash
+bash install_linux.sh
+```
+
 ## Install — Windows
 
-CadQuery's OCP backend doesn't install cleanly via pip on Windows.
-Use conda (Miniforge recommended):
+CadQuery's OCP backend doesn't install cleanly via pip on Windows. Use conda (Miniforge recommended):
 
 ```powershell
 # 1. Install Miniforge: https://github.com/conda-forge/miniforge/releases/latest
@@ -68,23 +121,27 @@ Use conda (Miniforge recommended):
 
 # 2. Open Miniforge Prompt, then:
 conda install -c conda-forge cadquery
-pip install PyQt5
+pip install PyQt5 pyqtgraph PyOpenGL numpy numpy-stl
 
 # 3. Run the GUI
-python soft_jaw_gui.py
+python soft_jaw_gui_opengl.py
 ```
 
-Or if you prefer a one-liner to clone and set up:
-```powershell
-git clone https://github.com/SocietyCharter/soft-jaw-generator.git
-cd soft-jaw-generator
-conda install -c conda-forge cadquery
-pip install PyQt5
-python soft_jaw_gui.py
-```
+---
 
-## Output
+## Honest Limitations
 
-- `jaw_left.step` — left jaw half
-- `jaw_right.step` — right jaw half
-- `jaw_preview_gui.png` — Blender render of assembly
+- Clearance and draft are approximate — not a full OCC normal-offset cavity.
+- Anti-lock sweep is a directional envelope approximation, not a mathematical proof of removability.
+- Currently targets **2-jaw mill vises**. 3-jaw chuck support is the next architecture step — not included.
+
+---
+
+## Files
+
+| File | Description |
+|---|---|
+| `soft_jaw_gen_v3.py` | Core geometry engine |
+| `soft_jaw_gui_opengl.py` | PyQt5 + pyqtgraph OpenGL GUI |
+| `requirements.txt` | Python dependencies |
+| `install_linux.sh` | Linux/macOS venv setup script |

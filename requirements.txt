@@ -1,3 +1,7 @@
-cadquery>=2.7.0
-cadquery-ocp>=7.8.1
-PyQt5>=5.15.0
+cadquery>=2.4
+cadquery-ocp>=7.7
+PyQt5>=5.15
+pyqtgraph>=0.13
+PyOpenGL>=3.1
+numpy>=1.24
+numpy-stl>=3.1
