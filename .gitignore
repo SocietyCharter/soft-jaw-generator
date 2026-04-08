@@ -1,7 +1,20 @@
-venv/
+# Python
 __pycache__/
-*.pyc
-output_v*/
-*.png
-*.stl
-blender_script_temp.py
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual envs
+.venv/
+venv/
+env/
+.conda-env/
+
+# Local tooling
+.codex_import_check.py
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

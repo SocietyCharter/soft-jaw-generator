@@ -6,7 +6,7 @@ import math
 import os
 import sys
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import cadquery as cq
 
@@ -25,7 +25,8 @@ class JawBuildResult:
     stock_x: float
     stock_y: float
     mount_height: float
-    grip_depth: float
+    holding_height: float
+    part_z_offset: float
     seam_clearance: float
 
 
@@ -41,9 +42,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--stock-margin", type=float, default=15.0, help="Jaw stock overhang beyond part bbox per side (mm)")
     p.add_argument("--mount-height", type=float, default=20.0, help="Jaw mounting block height below part datum (mm)")
     p.add_argument("--grip-depth", type=float, default=None, help="How deep the pocket grips the part (mm). Default: 40%% of part height")
+    p.add_argument("--holding-height", type=float, default=None, help="Thickness of the holding band cut into the jaw tops (mm)")
+    p.add_argument("--part-z-offset", type=float, default=0.0, help="Shift the jaw contact band up or down along the part Z axis (mm)")
     p.add_argument("--orient", default="0,0,0", help="Part rotation rx,ry,rz degrees")
     p.add_argument("--draft-angle", type=float, default=1.0, help="Approx release angle used in the clearance growth model")
     p.add_argument("--seam-clearance", type=float, default=0.0, help="Gap centered on the jaw split plane in mm")
+    p.add_argument("--sweep-steps", type=int, default=12, help="Number of stepped Z sweep samples used to grow each jaw cutter")
     return p.parse_args()
 
 
@@ -115,6 +119,31 @@ def _union_vals(vals):
     return out
 
 
+def union_workplanes(parts: List[cq.Workplane]) -> cq.Workplane:
+    vals = []
+    for part in parts:
+        vals.extend(_iter_vals(part))
+    unioned = _union_vals(vals)
+    if unioned is not None:
+        return unioned
+    return cq.Workplane("XY")
+
+
+def keep_largest_solid(shape: cq.Workplane) -> cq.Workplane:
+    solids = []
+    for val in _iter_vals(shape):
+        try:
+            vol = val.Volume()
+        except Exception:
+            vol = 0.0
+        if vol > 0:
+            solids.append((vol, val))
+    if not solids:
+        return shape
+    solids.sort(key=lambda item: item[0], reverse=True)
+    return _shape_from_val(solids[0][1])
+
+
 def nonempty(shape: cq.Workplane, tol: float = 1e-6) -> bool:
     try:
         bb = get_bbox(shape)
@@ -171,19 +200,19 @@ def make_jaw_stock(stock_x: float, stock_y: float, mount_height: float) -> Tuple
     return jaw_left, jaw_right
 
 
-def make_grip_body(part_for_cut: cq.Workplane, grip_depth: float) -> cq.Workplane:
-    bb = get_bbox(part_for_cut)
+def make_grip_body(part_positioned: cq.Workplane, jaw_top_z: float, holding_height: float) -> cq.Workplane:
+    bb = get_bbox(part_positioned)
     part_w = max((bb.xmax - bb.xmin) + 400.0, 5.0)
     part_d = max((bb.ymax - bb.ymin) + 400.0, 5.0)
-    eps = max(0.02, grip_depth * 0.002)
+    eps = max(0.02, holding_height * 0.002)
 
-    z_bottom = bb.zmin - eps
-    z_top = bb.zmin + grip_depth + eps
+    z_top = jaw_top_z + eps
+    z_bottom = jaw_top_z - holding_height - eps
     z_mid = (z_top + z_bottom) / 2.0
     z_len = max(z_top - z_bottom, eps * 2.0)
 
     grip_zone = cq.Workplane("XY").box(part_w, part_d, z_len).translate((0, 0, z_mid))
-    grip_body = robust_intersect(part_for_cut, grip_zone)
+    grip_body = robust_intersect(part_positioned, grip_zone)
     if nonempty(grip_body):
         return grip_body
 
@@ -238,32 +267,44 @@ def make_owned_region(grip_body: cq.Workplane, side: str, seam_clearance: float)
     return owned
 
 
-def extend_cutter_for_clean_boolean(owned: cq.Workplane, side: str, seam_clearance: float = 0.0, pad: float = 0.2) -> cq.Workplane:
+def extend_cutter_for_clean_boolean(
+    owned: cq.Workplane,
+    jaw_stock: cq.Workplane,
+    side: str,
+    seam_clearance: float = 0.0,
+    pad: float = 0.2,
+    sweep_steps: int = 12,
+    release_angle_deg: float = 1.0,
+    holding_height: float = 5.0,
+) -> cq.Workplane:
     """
-    Keep the cutter honest: use the actual owned geometry, just extend it
-    a hair toward the seam so the boolean cuts cleanly.
-
-    No sweep. No unwrapped envelope.
+    Project the held part band straight down in -Z through the jaw.
+    This avoids jaw-locking re-entrant geometry below the holding band while
+    still preserving the negative of the part where the jaws actually grip.
     """
-    bb = get_bbox(owned)
-    xlen = (bb.xmax - bb.xmin) + 2.0
-    zlen = (bb.zmax - bb.zmin) + 2.0
+    owned_bb = get_bbox(owned)
+    jaw_bb = get_bbox(jaw_stock)
+    z_drop = max(owned_bb.zmin - jaw_bb.zmin, 0.0) + pad
+    steps = max(int(sweep_steps), 1)
 
-    if side == "left":
-        y_min = bb.ymin - pad
-        y_max = bb.ymax + pad
-    else:
-        y_min = bb.ymin - pad
-        y_max = bb.ymax + pad
+    projected_parts = [owned]
+    for idx in range(1, steps + 1):
+        dz = -(z_drop * idx / steps)
+        projected_parts.append(owned.translate((0, 0, dz)))
 
-    ylen = max(y_max - y_min, 0.5)
-    cy = (y_min + y_max) / 2.0
-
-    trim_box = cq.Workplane("XY").box(xlen, ylen, zlen).translate((0, cy, (bb.zmin + bb.zmax) / 2.0))
-    cutter = robust_intersect(owned, trim_box)
-    if not nonempty(cutter):
+    projected = union_workplanes(projected_parts)
+    if not nonempty(projected):
         return owned
-    return cutter
+
+    xlen = max((owned_bb.xmax - owned_bb.xmin) + (2.0 * pad), 0.5)
+    ylen = max((owned_bb.ymax - owned_bb.ymin) + (2.0 * pad), 0.5)
+    zlen = max((owned_bb.zmax - jaw_bb.zmin) + (2.0 * pad), 0.5)
+    cx = (owned_bb.xmin + owned_bb.xmax) / 2.0
+    cy = (owned_bb.ymin + owned_bb.ymax) / 2.0
+    cz = (owned_bb.zmax + jaw_bb.zmin) / 2.0
+    trim_box = cq.Workplane("XY").box(xlen, ylen, zlen).translate((cx, cy, cz))
+    cutter = robust_intersect(projected, trim_box)
+    return cutter if nonempty(cutter) else projected
 
 
 def add_knife_relief(jaw: cq.Workplane, split_z: float, relief_angle_deg: float, jaw_width: float, jaw_depth: float, side: str) -> cq.Workplane:
@@ -302,9 +343,12 @@ def build_jaws(
     stock_margin: float = 15.0,
     mount_height: float = 20.0,
     grip_depth: Optional[float] = None,
+    holding_height: Optional[float] = None,
+    part_z_offset: float = 0.0,
     orient: Tuple[float, float, float] = (0.0, 0.0, 0.0),
     draft_angle: float = 1.0,
     seam_clearance: float = 0.0,
+    sweep_steps: int = 12,
 ) -> JawBuildResult:
     part = load_step(input_path)
     rx, ry, rz = orient
@@ -317,28 +361,53 @@ def build_jaws(
     pdy = bb.ymax - bb.ymin
     pdz = bb.zmax - bb.zmin
 
-    if grip_depth is None:
-        grip_depth = max(0.1, pdz * 0.40)
-    grip_depth = min(grip_depth, pdz)
+    if holding_height is None:
+        holding_height = grip_depth
+    if holding_height is None:
+        holding_height = max(0.1, pdz * 0.20)
+    holding_height = min(max(holding_height, 0.1), pdz)
 
     stock_x = pdx + 2.0 * stock_margin
     stock_y = pdy + 2.0 * stock_margin
 
     jaw_left_stock, jaw_right_stock = make_jaw_stock(stock_x, stock_y, mount_height)
 
-    part_for_cut = part.translate((0, 0, mount_height))
+    contact_z = min(max(holding_height + part_z_offset, holding_height), pdz)
+    actual_part_z_offset = contact_z - holding_height
+    part_positioned = part.translate((0, 0, mount_height - contact_z))
 
-    grip_body = make_grip_body(part_for_cut, grip_depth)
+    grip_body = make_grip_body(part_positioned, jaw_top_z=mount_height, holding_height=holding_height)
     grip_body = apply_clearance_and_draft(grip_body, clearance=clearance, draft_angle_deg=draft_angle)
 
-    left_owned = make_owned_region(grip_body, side="left", seam_clearance=seam_clearance)
-    right_owned = make_owned_region(grip_body, side="right", seam_clearance=seam_clearance)
+    left_owned = robust_intersect(grip_body, jaw_left_stock)
+    right_owned = robust_intersect(grip_body, jaw_right_stock)
+    if not nonempty(left_owned) or not nonempty(right_owned):
+        left_owned = make_owned_region(grip_body, side="left", seam_clearance=seam_clearance)
+        right_owned = make_owned_region(grip_body, side="right", seam_clearance=seam_clearance)
 
-    left_cutter = extend_cutter_for_clean_boolean(left_owned, side="left", seam_clearance=seam_clearance)
-    right_cutter = extend_cutter_for_clean_boolean(right_owned, side="right", seam_clearance=seam_clearance)
+    left_cutter = extend_cutter_for_clean_boolean(
+        left_owned,
+        jaw_left_stock,
+        side="left",
+        seam_clearance=seam_clearance,
+        sweep_steps=sweep_steps,
+        release_angle_deg=draft_angle,
+        holding_height=holding_height,
+    )
+    right_cutter = extend_cutter_for_clean_boolean(
+        right_owned,
+        jaw_right_stock,
+        side="right",
+        seam_clearance=seam_clearance,
+        sweep_steps=sweep_steps,
+        release_angle_deg=draft_angle,
+        holding_height=holding_height,
+    )
 
     jaw_left = jaw_left_stock.cut(left_cutter)
     jaw_right = jaw_right_stock.cut(right_cutter)
+    jaw_left = keep_largest_solid(jaw_left)
+    jaw_right = keep_largest_solid(jaw_right)
 
     jaw_left = add_knife_relief(jaw_left, mount_height, relief_angle, stock_x, stock_y / 2.0, "left")
     jaw_right = add_knife_relief(jaw_right, mount_height, relief_angle, stock_x, stock_y / 2.0, "right")
@@ -346,7 +415,6 @@ def build_jaws(
     jaw_left = add_bolt_holes(jaw_left, stock_x, stock_y)
     jaw_right = add_bolt_holes(jaw_right, stock_x, stock_y)
 
-    part_positioned = part_for_cut
     grip_cutter = left_cutter.union(right_cutter)
 
     return JawBuildResult(
@@ -362,7 +430,8 @@ def build_jaws(
         stock_x=stock_x,
         stock_y=stock_y,
         mount_height=mount_height,
-        grip_depth=grip_depth,
+        holding_height=holding_height,
+        part_z_offset=actual_part_z_offset,
         seam_clearance=seam_clearance,
     )
 
@@ -406,9 +475,12 @@ def main() -> None:
         stock_margin=args.stock_margin,
         mount_height=args.mount_height,
         grip_depth=args.grip_depth,
+        holding_height=args.holding_height,
+        part_z_offset=args.part_z_offset,
         orient=orient,
         draft_angle=args.draft_angle,
         seam_clearance=args.seam_clearance,
+        sweep_steps=args.sweep_steps,
     )
 
     safe_export(result.jaw_left, os.path.join(out_dir, "jaw_left.step"), "jaw_left")
